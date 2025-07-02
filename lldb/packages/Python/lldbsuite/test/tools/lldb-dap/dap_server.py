@@ -894,7 +894,8 @@ class DebugCommunication(object):
         disableASLR=False,
         disableSTDIO=False,
         shellExpandArguments=False,
-        runInTerminal=False,
+        runInTerminal=False,  # deprecated
+        console: Optional[str] = None,
         enableAutoVariableSummaries=False,
         displayExtendedBacktrace=False,
         enableSyntheticChildDebugging=False,
@@ -946,6 +947,8 @@ class DebugCommunication(object):
             args_dict["sourceMap"] = sourceMap
         if runInTerminal:
             args_dict["runInTerminal"] = runInTerminal
+        if console:
+            args_dict["console"] = console
         if postRunCommands:
             args_dict["postRunCommands"] = postRunCommands
         if customFrameFormat:
