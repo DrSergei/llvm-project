@@ -701,4 +701,9 @@ bool fromJSON(const llvm::json::Value &Params, PauseArguments &Args,
   return O && O.map("threadId", Args.threadId);
 }
 
+llvm::json::Value toJSON(const TestGetTargetBreakpointsResponseBody &Body) {
+  json::Object result{{"breakpoints", Body.breakpoints}};
+  return result;
+}
+
 } // namespace lldb_dap::protocol
