@@ -73,7 +73,6 @@ public:
   llvm::Expected<size_t> GetIndexOfChildWithName(ConstString name) override;
 
 private:
-
   // The lifetime of a ValueObject and all its derivative ValueObjects
   // (children, clones, etc.) is managed by a ClusterManager. These
   // objects are only destroyed when every shared pointer to any of them
@@ -408,5 +407,93 @@ bool formatters::LibStdcppVariantSummaryProvider(
 
   auto active_type = variant_type.GetTypeTemplateArgument(index, true);
   stream << " Active Type = " << active_type.GetDisplayTypeName() << " ";
+  return true;
+}
+
+static std::optional<int64_t>
+LibStdcppExtractOrderingValue(ValueObject &valobj) {
+  lldb::ValueObjectSP value_sp = valobj.GetChildMemberWithName("_M_value");
+  if (!value_sp)
+    return std::nullopt;
+  bool success;
+  int64_t value = value_sp->GetValueAsSigned(0, &success);
+  if (!success)
+    return std::nullopt;
+  return value;
+}
+
+bool lldb_private::formatters::LibStdcppPartialOrderingSummaryProvider(
+    ValueObject &valobj, Stream &stream, const TypeSummaryOptions &options) {
+  std::optional<int64_t> value = LibStdcppExtractOrderingValue(valobj);
+  if (!value) {
+    stream << "Summary Unavailable";
+    return true;
+  }
+  switch (*value) {
+  case -1:
+    stream << "less";
+    break;
+  case 0:
+    stream << "equivalent";
+    break;
+  case 1:
+    stream << "greater";
+    break;
+  case -128:
+  case 2:
+    stream << "unordered";
+    break;
+  default:
+    stream << "Invalid partial ordering value";
+    break;
+  }
+  return true;
+}
+
+bool lldb_private::formatters::LibStdcppWeakOrderingSummaryProvider(
+    ValueObject &valobj, Stream &stream, const TypeSummaryOptions &options) {
+  std::optional<int64_t> value = LibStdcppExtractOrderingValue(valobj);
+  if (!value) {
+    stream << "Summary Unavailable";
+    return true;
+  }
+  switch (*value) {
+  case -1:
+    stream << "less";
+    break;
+  case 0:
+    stream << "equivalent";
+    break;
+  case 1:
+    stream << "greater";
+    break;
+  default:
+    stream << "Invalid weak ordering value";
+    break;
+  }
+  return true;
+}
+
+bool lldb_private::formatters::LibStdcppStrongOrderingSummaryProvider(
+    ValueObject &valobj, Stream &stream, const TypeSummaryOptions &options) {
+  std::optional<int64_t> value = LibStdcppExtractOrderingValue(valobj);
+  if (!value) {
+    stream << "Summary Unavailable";
+    return true;
+  }
+  switch (*value) {
+  case -1:
+    stream << "less";
+    break;
+  case 0:
+    stream << "equal";
+    break;
+  case 1:
+    stream << "greater";
+    break;
+  default:
+    stream << "Invalid strong ordering value";
+    break;
+  }
   return true;
 }
