@@ -444,8 +444,7 @@ bool lldb_private::formatters::LibStdcppPartialOrderingSummaryProvider(
     stream << "unordered";
     break;
   default:
-    stream << "Invalid partial ordering value";
-    break;
+    return false;
   }
   return true;
 }
@@ -468,8 +467,7 @@ bool lldb_private::formatters::LibStdcppWeakOrderingSummaryProvider(
     stream << "greater";
     break;
   default:
-    stream << "Invalid weak ordering value";
-    break;
+    return false;
   }
   return true;
 }
@@ -492,8 +490,7 @@ bool lldb_private::formatters::LibStdcppStrongOrderingSummaryProvider(
     stream << "greater";
     break;
   default:
-    stream << "Invalid strong ordering value";
-    break;
+    return false;
   }
   return true;
 }
