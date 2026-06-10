@@ -91,6 +91,34 @@ LibStdcppUniquePtrSyntheticFrontEndCreator(CXXSyntheticChildren *,
 bool LibStdcppVariantSummaryProvider(ValueObject &valobj, Stream &stream,
                                      const TypeSummaryOptions &options);
 
+bool LibStdcppChronoSysSecondsSummaryProvider(
+    ValueObject &valobj, Stream &stream,
+    const TypeSummaryOptions &options); // libstdc++ std::chrono::sys_seconds
+
+bool LibStdcppChronoSysDaysSummaryProvider(
+    ValueObject &valobj, Stream &stream,
+    const TypeSummaryOptions &options); // libstdc++ std::chrono::sys_days
+
+bool LibStdcppChronoLocalSecondsSummaryProvider(
+    ValueObject &valobj, Stream &stream,
+    const TypeSummaryOptions &options); // libstdc++ std::chrono::local_seconds
+
+bool LibStdcppChronoLocalDaysSummaryProvider(
+    ValueObject &valobj, Stream &stream,
+    const TypeSummaryOptions &options); // libstdc++ std::chrono::local_days
+
+bool LibStdcppChronoMonthSummaryProvider(
+    ValueObject &valobj, Stream &stream,
+    const TypeSummaryOptions &options); // libstdc++ std::chrono::month
+
+bool LibStdcppChronoWeekdaySummaryProvider(
+    ValueObject &valobj, Stream &stream,
+    const TypeSummaryOptions &options); // libstdc++ std::chrono::weekday
+
+bool LibStdcppChronoYearMonthDaySummaryProvider(
+    ValueObject &valobj, Stream &stream,
+    const TypeSummaryOptions &options); // libstdc++ std::chrono::year_month_day
+
 } // namespace formatters
 } // namespace lldb_private
 

@@ -433,7 +433,13 @@ class StdChronoDataFormatterTestCase(TestBase):
         )
 
     @skipIf(compiler="clang", compiler_version=["<", "17.0"])
+    @add_test_categories(["libstdcxx"])
+    def test_libstdcpp(self):
+        self.build(dictionary={"USE_LIBSTDCPP": 1})
+        self.do_test()
+
+    @skipIf(compiler="clang", compiler_version=["<", "17.0"])
     @add_test_categories(["libc++"])
-    def test_libcxx(self):
+    def test_libcpp(self):
         self.build(dictionary={"USE_LIBCPP": 1})
         self.do_test()
