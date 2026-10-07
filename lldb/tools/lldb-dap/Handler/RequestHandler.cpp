@@ -202,6 +202,10 @@ void BaseRequestHandler::Run(const Request &request) {
 llvm::Error BaseRequestHandler::LaunchProcess(
     const protocol::LaunchRequestArguments &arguments) const {
   const std::vector<String> &launchCommands = arguments.launchCommands;
+  if (arguments.configuration.debugChildProcesses && !launchCommands.empty())
+    return llvm::make_error<DAPError>(
+        "debugChildProcesses requires a standard local launch; "
+        "custom launchCommands are not supported");
 
   // Instantiate a launch info instance for the target.
   auto launch_info = dap.target.GetLaunchInfo();
@@ -279,7 +283,7 @@ llvm::Error BaseRequestHandler::LaunchProcess(
   if (error.Fail())
     return ToError(error);
 
-  return llvm::Error::success();
+  return dap.ConfigureChildProcessDebugging(launchCommands.empty());
 }
 
 void BaseRequestHandler::PrintWelcomeMessage() const {

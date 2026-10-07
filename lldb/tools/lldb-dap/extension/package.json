@@ -513,6 +513,11 @@
                   }
                 ]
               },
+              "debugChildProcesses": {
+                "type": "boolean",
+                "description": "Automatically debug children created by fork on local Linux targets. Requires client support for startDebugging. vfork children are not handed off.",
+                "default": false
+              },
               "stopOnEntry": {
                 "type": "boolean",
                 "description": "Automatically stop after launch.",
@@ -775,6 +780,11 @@
                 "type": "boolean",
                 "description": "If set to true, then wait for the process to launch by looking for a process with a basename that matches `program`. No process ID needs to be specified when using this flag.",
                 "default": true
+              },
+              "debugChildProcesses": {
+                "type": "boolean",
+                "description": "Automatically debug children created by fork on local Linux targets. Requires client support for startDebugging. vfork children are not handed off.",
+                "default": false
               },
               "stopOnEntry": {
                 "type": "boolean",

@@ -1584,8 +1584,16 @@ protected:
       bool is_expression_fork =
           thread_sp->GetProcess()->GetModIDRef().IsRunningExpression() &&
           thread_sp->IsRunningCallFunctionPlan();
-      thread_sp->GetProcess()->DidFork(m_child_pid, m_child_tid,
-                                       is_expression_fork);
+      ProcessSP process_sp = thread_sp->GetProcess();
+      if (process_sp->DidFork(m_child_pid, m_child_tid, is_expression_fork)) {
+        // Preserve the PID before stop hooks can resume the parent and
+        // invalidate its thread stop information. A separate event also lets
+        // clients release the child while a stop hook is still running.
+        auto info = std::make_shared<StructuredData::Dictionary>();
+        info->AddStringItem("type", "fork");
+        info->AddIntegerItem("pid", GetValue());
+        process_sp->BroadcastStructuredData(info, {});
+      }
     }
   }
 

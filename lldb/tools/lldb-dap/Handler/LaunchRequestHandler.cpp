@@ -55,6 +55,8 @@ Error LaunchRequestHandler::Run(const LaunchRequestArguments &arguments) const {
   // Run any pre run LLDB commands the user specified in the launch.json
   if (Error err = dap.RunPreRunCommands())
     return err;
+  if (Error err = dap.ConfigureChildProcessDebugging())
+    return err;
 
   if (Error err = LaunchProcess(arguments))
     return err;

@@ -260,7 +260,7 @@ public:
   std::string HarmonizeThreadIdsForProfileData(
       StringExtractorGDBRemote &inputStringExtractor);
 
-  void DidFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
+  bool DidFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
                bool is_expression_fork = false) override;
   void DidVFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
                 bool is_expression_fork = false) override;

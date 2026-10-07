@@ -1062,6 +1062,11 @@ class StartDebuggingRequestArgs:
 
 
 @dataclass(frozen=True)
+class StartDebuggingRequest(Request):
+    arguments: StartDebuggingRequestArgs
+
+
+@dataclass(frozen=True)
 class InitializeResponse(Response):
     body: Capabilities
 
@@ -1134,6 +1139,7 @@ class LaunchArgs:
     debuggerRoot: Optional[str] = None
     enableAutoVariableSummaries: bool = False
     enableSyntheticChildDebugging: bool = False
+    debugChildProcesses: Optional[bool] = None
     displayExtendedBacktrace: bool = False
     stopOnEntry: Optional[bool] = None
     timeout: Optional[float] = None
@@ -1180,6 +1186,7 @@ class AttachArgs:
     debuggerRoot: Optional[str] = None
     enableAutoVariableSummaries: Optional[bool] = None
     enableSyntheticChildDebugging: Optional[bool] = None
+    debugChildProcesses: Optional[bool] = None
     displayExtendedBacktrace: Optional[bool] = None
     stopOnEntry: Optional[bool] = None
     timeout: Optional[float] = None

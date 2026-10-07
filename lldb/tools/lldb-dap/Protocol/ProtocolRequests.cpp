@@ -239,6 +239,7 @@ bool fromJSON(const json::Value &Params, Configuration &C, json::Path P) {
                        C.enableSyntheticChildDebugging) &&
          O.mapOptional("displayExtendedBacktrace",
                        C.displayExtendedBacktrace) &&
+         O.mapOptional("debugChildProcesses", C.debugChildProcesses) &&
          O.mapOptional("stopOnEntry", C.stopOnEntry) &&
          O.mapOptional("commandEscapePrefix", C.commandEscapePrefix) &&
          O.mapOptional("customFrameFormat", C.customFrameFormat) &&

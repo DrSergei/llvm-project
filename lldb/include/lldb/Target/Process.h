@@ -1046,8 +1046,11 @@ public:
   virtual void DoDidExec() {}
 
   /// Called after a reported fork.
-  virtual void DidFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
-                       bool is_expression_fork = false) {}
+  /// Returns true if the child was detached and kept stopped.
+  virtual bool DidFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
+                       bool is_expression_fork = false) {
+    return false;
+  }
 
   /// Called after a reported vfork.
   virtual void DidVFork(lldb::pid_t child_pid, lldb::tid_t child_tid,

@@ -27,14 +27,18 @@
 #include "lldb/API/SBBreakpoint.h"
 #include "lldb/API/SBCommandInterpreter.h"
 #include "lldb/API/SBEvent.h"
+#include "lldb/API/SBExecutionContext.h"
 #include "lldb/API/SBLanguageRuntime.h"
 #include "lldb/API/SBListener.h"
 #include "lldb/API/SBMutex.h"
+#include "lldb/API/SBPlatform.h"
 #include "lldb/API/SBProcess.h"
 #include "lldb/API/SBStream.h"
+#include "lldb/API/SBStringList.h"
 #include "lldb/Host/JSONTransport.h"
 #include "lldb/Host/MainLoop.h"
 #include "lldb/Host/MainLoopBase.h"
+#include "lldb/Host/PosixApi.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/lldb-defines.h"
 #include "lldb/lldb-enumerations.h"
@@ -46,11 +50,13 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Chrono.h"
+#include "llvm/Support/Errno.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -784,6 +790,135 @@ void DAP::SendTerminatedEvent() {
   });
 }
 
+namespace {
+std::mutex child_settings_mutex;
+std::atomic<unsigned> child_settings_users{0};
+constexpr const char *child_setting_names[] = {
+    "target.process.stop-on-fork", "target.process.detach-keeps-stopped"};
+std::string saved_child_settings[2];
+} // namespace
+
+bool DAP::ChildProcessDebuggingActive() { return child_settings_users != 0; }
+
+llvm::Error DAP::ConfigureChildProcessDebugging(bool configure_process) {
+  // Track only standard host launches/attaches. With global fork settings,
+  // disabled local sessions must also release children stopped by other
+  // sessions.
+  if (configure_process && target.GetPlatform().IsHost()) {
+    std::lock_guard<std::mutex> guard(child_processes_mutex);
+    child_debugging_processes.insert(target.GetProcess().GetUniqueID());
+  }
+  if (!configuration.debugChildProcesses)
+    return llvm::Error::success();
+  if (!clientFeatures.contains(protocol::eClientFeatureStartDebuggingRequest))
+    return llvm::make_error<DAPError>(
+        "debugChildProcesses requires supportsStartDebuggingRequest");
+  if (!target.GetPlatform().IsHost())
+    return llvm::make_error<DAPError>(
+        "debugChildProcesses currently requires a local target");
+
+  // Before launch this only validates the request. Enable the policy
+  // after the standard local launch/attach has produced a stopped process.
+  if (!configure_process)
+    return llvm::Error::success();
+  last_fork_stop_id = 0;
+  {
+    std::lock_guard<std::mutex> guard(child_processes_mutex);
+    child_debugging_closed = false;
+  }
+  // Preserve the existing global settings and restore them when the last
+  // participating session ends, including independently attached child
+  // sessions.
+  std::lock_guard<std::mutex> settings_guard(child_settings_mutex);
+  if (!owns_child_debugging_settings) {
+    if (child_settings_users == 0) {
+      for (unsigned i = 0; i < 2; ++i) {
+        auto value = lldb::SBDebugger::GetInternalVariableValue(
+            child_setting_names[i], debugger.GetInstanceName());
+        saved_child_settings[i] = value.GetStringAtIndex(0);
+      }
+    }
+    ++child_settings_users;
+    owns_child_debugging_settings = true;
+  }
+  lldb::SBExecutionContext context(target);
+  auto interpreter = debugger.GetCommandInterpreter();
+  for (const char *command :
+       {"settings set target.process.follow-fork-mode parent",
+        "settings set target.process.stop-on-fork true",
+        "settings set target.process.detach-keeps-stopped true"}) {
+    lldb::SBCommandReturnObject result;
+    interpreter.HandleCommand(command, context, result);
+    if (!result.Succeeded())
+      return llvm::make_error<DAPError>(result.GetError());
+  }
+  return llvm::Error::success();
+}
+
+void DAP::FinishChildProcessDebugging(lldb::pid_t pid, bool resume) {
+  {
+    std::lock_guard<std::mutex> guard(child_processes_mutex);
+    if (!pending_child_processes.erase(pid))
+      return;
+  }
+#if !defined(_WIN32)
+  if (resume && ::kill(pid, SIGCONT) != 0 && errno != ESRCH)
+    SendOutput(OutputType::Important,
+               llvm::formatv("Unable to resume detached child {0}: {1}\n", pid,
+                             llvm::sys::StrError())
+                   .str());
+#endif
+}
+
+void DAP::HandleForkEvents() {
+  lldb::SBMutex api_mutex = target.GetAPIMutex();
+  std::lock_guard<lldb::SBMutex> api_guard(api_mutex);
+  // Consume notifications independently of the stop event's stop hooks.
+  lldb::SBEvent event;
+  auto listener = debugger.GetListener();
+  while (target.GetProcess().IsValid() &&
+         listener.GetNextEventForBroadcasterWithType(
+             target.GetProcess().GetBroadcaster(),
+             lldb::SBProcess::eBroadcastBitStructuredData, event))
+    HandleForkEvent(event);
+}
+
+void DAP::ResumePendingChildProcesses() {
+  lldb::SBMutex api_mutex = target.GetAPIMutex();
+  std::lock_guard<lldb::SBMutex> api_guard(api_mutex);
+  {
+    std::lock_guard<std::mutex> guard(child_processes_mutex);
+    child_debugging_closed = true;
+  }
+  {
+    std::lock_guard<std::mutex> settings_guard(child_settings_mutex);
+    if (owns_child_debugging_settings) {
+      owns_child_debugging_settings = false;
+      if (--child_settings_users == 0) {
+        lldb::SBExecutionContext context(target);
+        for (unsigned i = 0; i < 2; ++i) {
+          lldb::SBCommandReturnObject result;
+          debugger.GetCommandInterpreter().HandleCommand(
+              llvm::formatv("settings set {0} {1}", child_setting_names[i],
+                            saved_child_settings[i])
+                  .str()
+                  .c_str(),
+              context, result);
+        }
+      }
+    }
+  }
+  HandleForkEvents();
+  std::vector<lldb::pid_t> pending_children;
+  {
+    std::lock_guard<std::mutex> guard(child_processes_mutex);
+    pending_children.assign(pending_child_processes.begin(),
+                            pending_child_processes.end());
+  }
+  for (lldb::pid_t pid : pending_children)
+    FinishChildProcessDebugging(pid, /*resume=*/true);
+}
+
 llvm::Error DAP::Disconnect() { return Disconnect(!is_attach); }
 
 llvm::Error DAP::Disconnect(bool terminateDebuggee) {
@@ -796,6 +931,8 @@ llvm::Error DAP::Disconnect(bool terminateDebuggee) {
     if (m_queue_state == QueueState::Disconnected)
       return llvm::Error::success();
   }
+
+  ResumePendingChildProcesses();
 
   lldb::SBError error;
   lldb::SBProcess process = target.GetProcess();
@@ -815,7 +952,7 @@ llvm::Error DAP::Disconnect(bool terminateDebuggee) {
   case lldb::eStateStopped:
   case lldb::eStateRunning: {
     ScopeSyncMode scope_sync_mode(debugger);
-    error = terminateDebuggee ? process.Kill() : process.Detach();
+    error = terminateDebuggee ? process.Kill() : process.Detach(false);
     break;
   }
   }

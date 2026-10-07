@@ -23,6 +23,7 @@ from .types import (
     ContinueArgs,
     DAPError,
     ErrorResponse,
+    EmptyBodyResponse,
     Event,
     ExitedEvent,
     GotoArgs,
@@ -40,6 +41,7 @@ from .types import (
     ReverseResponse,
     RunInTerminalRequest,
     RunInTerminalResponse,
+    StartDebuggingRequest,
     StepInArgs,
     StepOutArgs,
     TerminateArgs,
@@ -248,6 +250,9 @@ class Session:
 
         # Reverse Requests.
         self._reverse_requests: list[Request] = []
+        self.start_debugging_handler: Optional[
+            Callable[[StartDebuggingRequest], Optional[bool]]
+        ] = None
         self._reverse_process: Optional[subprocess.Popen[bytes]] = None
         # The list of threads that redirects stdio when the debuggee
         # is created using `RunInTerminal`.
@@ -319,6 +324,30 @@ class Session:
             terminal_request = dict_to_message(RunInTerminalRequest, request)
             self._reverse_requests.append(terminal_request)
             self._handle_run_in_terminal(terminal_request)
+        elif request_type == "startDebugging":
+            child_request = dict_to_message(StartDebuggingRequest, request)
+            self._reverse_requests.append(child_request)
+            accepted = (
+                self.start_debugging_handler(child_request)
+                if self.start_debugging_handler
+                else True
+            )
+            if accepted is None:
+                return  # The test will reply later or disconnect.
+            response = dict(
+                type=MessageType.RESPONSE,
+                seq=0,
+                command=request_type,
+                request_seq=child_request.seq,
+                success=accepted,
+            )
+            self._send_response(
+                EmptyBodyResponse(**response)
+                if accepted
+                else ErrorResponse(
+                    **response, message="Child debugging rejected by test client"
+                )
+            )
         else:
             raise NotImplementedError(
                 f"no reverse request handler for '{request_type}'"

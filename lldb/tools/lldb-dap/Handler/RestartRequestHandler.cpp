@@ -42,6 +42,8 @@ RestartRequestHandler::Run(const std::optional<RestartArguments> &args) const {
     }
   }
 
+  dap.ResumePendingChildProcesses();
+
   // Keep track of the old PID so when we get a "process exited" event from the
   // killed process we can detect it and not shut down the whole session.
   lldb::SBProcess process = dap.target.GetProcess();

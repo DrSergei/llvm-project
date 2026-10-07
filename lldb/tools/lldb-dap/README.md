@@ -221,6 +221,31 @@ on your specific debugging setup. E.g., `code --open-url` will not work when usi
 SSH remote session. Furthermore, placeholders such as `${workspaceFolder}` are not
 supported within launch URLs.
 
+### Debugging fork children
+
+Set `"debugChildProcesses": true` in a launch or attach configuration to debug
+ordinary fork children in separate sessions. This currently requires a local
+Linux process using the adapter's standard launch or attach path, and a
+client advertising `supportsStartDebuggingRequest`. Remote connections, custom
+`launchCommands`/`attachCommands`, core files and existing target sessions are
+not supported with this option.
+The original session follows the parent. Each child is detached and kept stopped
+while the client starts a new attach session and configures its breakpoints;
+`configurationDone` then resumes it. Child sessions also debug their fork children.
+Source mappings and debugger display settings are copied to each child session.
+The existing global fork and detach settings are restored when the last enabled
+session ends.
+
+The new adapter must have permission to attach by PID. On Linux, Yama's
+`ptrace_scope` restrictions may prevent attachment by an independent adapter.
+The parent should remain alive until the child is attached: an orphaned stopped
+process group may receive `SIGHUP` and `SIGCONT` from the kernel.
+If the client rejects the request or disconnects before answering, the child is
+resumed. After accepting the request, the client owns the child session's lifetime,
+including handling attachment failures.
+
+Vfork children and forks performed by expression evaluation are not handed off.
+
 ### Configuration Settings Reference
 
 For both launch and attach configurations, lldb-dap accepts the following `lldb-dap`
@@ -239,6 +264,7 @@ specific key/value pairs:
 | **customFrameFormat**             | string      |     | If non-empty, stack frames will have descriptions generated based on the provided format. See https://lldb.llvm.org/use/formatting.html for an explanation on format strings for frames. If the format string contains errors, an error message will be displayed on the Debug Console and the default frame names will be used. This might come with a performance cost because debug information might need to be processed to generate the description.
 | **customThreadFormat**            | string      |     | Same as `customFrameFormat`, but for threads instead of stack frames.
 | **displayExtendedBacktrace**      | bool        |     | Enable language specific extended backtraces.
+| **debugChildProcesses**           | boolean     |     | Automatically debug local fork children in separate attach sessions. Requires client support for `startDebugging`. Defaults to false; vfork children are not handed off. |
 | **enableAutoVariableSummaries**   | bool        |     | Enable auto generated summaries for variables when no summaries exist for a given type. This feature can cause performance delays in large projects when viewing variables.
 | **enableSyntheticChildDebugging** | bool        |     | If a variable is displayed using a synthetic children, also display the actual contents of the variable at the end under a [raw] entry. This is useful when creating synthetic child plug-ins as it lets you see the actual contents of the variable.
 | **initCommands**                  | [string]    |     | LLDB commands executed upon debugger startup prior to creating the LLDB target.

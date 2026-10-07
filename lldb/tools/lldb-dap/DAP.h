@@ -10,6 +10,7 @@
 #define LLDB_TOOLS_LLDB_DAP_DAP_H
 
 #include "DAPForward.h"
+#include "DAPLog.h"
 #include "DAPSessionManager.h"
 #include "ExceptionBreakpoint.h"
 #include "FunctionBreakpoint.h"
@@ -29,6 +30,7 @@
 #include "lldb/API/SBFile.h"
 #include "lldb/API/SBFormat.h"
 #include "lldb/API/SBFrame.h"
+#include "lldb/API/SBListener.h"
 #include "lldb/API/SBMutex.h"
 #include "lldb/API/SBTarget.h"
 #include "lldb/API/SBThread.h"
@@ -52,6 +54,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #define NO_TYPENAME "<no-type>"
@@ -122,6 +125,15 @@ struct DAP final : public DAPTransport::MessageHandler {
 
   llvm::once_flag terminated_event_flag;
   bool stop_at_entry = false;
+
+  /// Detached fork children waiting for the client to accept their sessions.
+  std::mutex child_processes_mutex;
+  llvm::DenseSet<lldb::pid_t> pending_child_processes;
+  // Retain prior local process IDs so late restart events can release children.
+  llvm::SmallSet<uint32_t, 2> child_debugging_processes;
+  bool child_debugging_closed = false;
+  bool owns_child_debugging_settings = false;
+  uint32_t last_fork_stop_id = 0;
   bool is_attach = false;
   bool is_live_session = true;
 
@@ -359,17 +371,32 @@ struct DAP final : public DAPTransport::MessageHandler {
   ///
   /// \param[in] arguments
   ///   The reverse request arguments.
-  template <typename Handler>
-  void SendReverseRequest(llvm::StringRef command,
-                          llvm::json::Value arguments) {
-    protocol::Id id = Send(protocol::Request{
-        command.str(),
-        std::move(arguments),
-    });
-
+  template <typename Handler, typename... Args>
+  void SendReverseRequest(llvm::StringRef command, llvm::json::Value arguments,
+                          Args &&...args) {
+    // A response can arrive as soon as Send returns. Keep dispatch from
+    // consuming it before its handler has been registered.
     std::lock_guard<std::mutex> locker(call_mutex);
-    inflight_reverse_requests[id] = std::make_unique<Handler>(command, id);
+    protocol::Id id = ++seq;
+    inflight_reverse_requests[id] =
+        std::make_unique<Handler>(command, id, std::forward<Args>(args)...);
+    if (llvm::Error err = transport.Send(
+            protocol::Request{command.str(), std::move(arguments), id}))
+      DAP_LOG_ERROR(log, std::move(err), "sending reverse request failed: {0}");
   }
+
+  llvm::Error ConfigureChildProcessDebugging(bool configure_process = false);
+
+  static bool ChildProcessDebuggingActive();
+
+  void HandleForkEvent(const lldb::SBEvent &event);
+  void HandleForkEvents();
+
+  /// Release a handed-off child, resuming it if the client rejected it.
+  void FinishChildProcessDebugging(lldb::pid_t pid, bool resume);
+
+  /// Resume children whose sessions have not been accepted yet.
+  void ResumePendingChildProcesses();
 
   /// The set of capabilities supported by this adapter.
   protocol::Capabilities GetCapabilities();

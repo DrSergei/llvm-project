@@ -6996,7 +6996,7 @@ void ProcessGDBRemote::DidForkSwitchHardwareTraps(bool enable) {
   }
 }
 
-void ProcessGDBRemote::DidFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
+bool ProcessGDBRemote::DidFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
                                bool is_expression_fork) {
   Log *log = GetLog(GDBRLog::Process);
 
@@ -7048,7 +7048,7 @@ void ProcessGDBRemote::DidFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
   // Switch to the process that is going to be detached.
   if (!m_gdb_comm.SetCurrentThread(detach_tid, detach_pid)) {
     LLDB_LOG(log, "ProcessGDBRemote::DidFork() unable to set pid/tid");
-    return;
+    return false;
   }
 
   // Disable all software breakpoints in the forked process.
@@ -7064,24 +7064,35 @@ void ProcessGDBRemote::DidFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
   if (!m_gdb_comm.SetCurrentThread(follow_tid, follow_pid) ||
       !m_gdb_comm.SetCurrentThreadForRun(follow_tid, follow_pid)) {
     LLDB_LOG(log, "ProcessGDBRemote::DidFork() unable to reset pid/tid");
-    return;
+    return false;
   }
 
   LLDB_LOG(log, "Detaching process {0}", detach_pid);
-  // When we overrode follow-child because of a concurrent expression, try to
-  // keep the child stopped so the user can attach to it manually.
-  bool keep_stopped = overrode_follow_mode && !is_expression_fork;
+  // Honor the detach policy for fork children, excluding expression forks.
+  // Also keep a child available for manual attachment when a concurrent
+  // expression forced us to override follow-child.
+  bool keep_stopped =
+      (GetDetachKeepsStopped() && follow_fork_mode == eFollowParent &&
+       !GetModIDRef().IsRunningExpression()) ||
+      (overrode_follow_mode && !is_expression_fork);
   Status error = m_gdb_comm.Detach(keep_stopped, detach_pid);
   if (error.Fail() && keep_stopped) {
     LLDB_LOG(log, "ProcessGDBRemote::DidFork() detach-and-stay-stopped not "
                   "supported, falling back to normal detach");
+    if (GetDetachKeepsStopped())
+      Debugger::ReportWarning(
+          llvm::formatv("Unable to keep forked child {0} stopped: {1}. "
+                        "Continuing without a child debug session.",
+                        child_pid, error.AsCString())
+              .str(),
+          GetTarget().GetDebugger().GetID());
     keep_stopped = false;
     error = m_gdb_comm.Detach(false, detach_pid);
   }
   if (error.Fail()) {
     LLDB_LOG(log, "ProcessGDBRemote::DidFork() detach packet send failed: {0}",
              error.AsCString() ? error.AsCString() : "<unknown error>");
-    return;
+    return false;
   }
 
   // Notify the user via the async output channel when we overrode
@@ -7110,6 +7121,7 @@ void ProcessGDBRemote::DidFork(lldb::pid_t child_pid, lldb::tid_t child_tid,
     // Update our PID
     SetID(child_pid);
   }
+  return follow_fork_mode == eFollowParent && keep_stopped;
 }
 
 void ProcessGDBRemote::DidVFork(lldb::pid_t child_pid, lldb::tid_t child_tid,

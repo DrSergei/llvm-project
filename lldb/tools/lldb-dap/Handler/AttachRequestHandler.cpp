@@ -38,6 +38,13 @@ Error AttachRequestHandler::Run(const AttachRequestArguments &args) const {
     return err;
 
   dap.SetConfiguration(args.configuration, /*is_attach=*/true);
+  if (args.configuration.debugChildProcesses &&
+      (args.gdbRemotePort != LLDB_DAP_INVALID_PORT ||
+       !args.attachCommands.empty() || !args.coreFile.empty() || session))
+    return make_error<DAPError>(
+        "debugChildProcesses requires a standard local attach; "
+        "remote connections, custom attachCommands, core files and existing "
+        "sessions are not supported");
   if (!args.coreFile.empty()) {
     dap.stop_at_entry = true;
     dap.is_live_session = false;
@@ -79,6 +86,8 @@ Error AttachRequestHandler::Run(const AttachRequestArguments &args) const {
 
   // Run any pre run LLDB commands the user specified in the launch.json
   if (Error err = dap.RunPreRunCommands())
+    return err;
+  if (Error err = dap.ConfigureChildProcessDebugging())
     return err;
 
   if ((args.pid == LLDB_INVALID_PROCESS_ID ||
@@ -156,6 +165,11 @@ Error AttachRequestHandler::Run(const AttachRequestArguments &args) const {
 
   if (args.coreFile.empty() && !dap.target.GetProcess().IsValid())
     return make_error<DAPError>("failed to attach to process");
+
+  if (Error err = dap.ConfigureChildProcessDebugging(
+          args.attachCommands.empty() && args.coreFile.empty() &&
+          args.gdbRemotePort == LLDB_DAP_INVALID_PORT && !session))
+    return err;
 
   dap.RunPostRunCommands();
 

@@ -169,6 +169,10 @@ struct Configuration {
   /// Enable language specific extended backtraces.
   bool displayExtendedBacktrace = false;
 
+  /// Automatically attach child sessions to local fork children.
+  /// vfork children are not handed off while they share the parent's memory.
+  bool debugChildProcesses = false;
+
   /// Stop at the entry point of the program when launching or attaching.
   bool stopOnEntry = false;
 

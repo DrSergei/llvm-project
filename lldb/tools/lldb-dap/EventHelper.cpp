@@ -417,6 +417,162 @@ void SendMemoryEvent(DAP &dap, lldb::SBValue variable) {
 // the original DAP::Handle*Event pattern while supporting multi-session
 // debugging.
 
+class ForkDebuggingResponseHandler : public ResponseHandler {
+public:
+  ForkDebuggingResponseHandler(llvm::StringRef command, int64_t id, DAP &dap,
+                               lldb::pid_t pid)
+      : ResponseHandler(command, id), m_dap(dap), m_pid(pid) {}
+
+  void operator()(llvm::Expected<llvm::json::Value> value) const override {
+    if (!value) {
+      m_dap.SendOutput(
+          OutputType::Important,
+          llvm::formatv("Unable to start debugging forked child {0}: {1}\n",
+                        m_pid, llvm::toString(value.takeError()))
+              .str());
+      m_dap.FinishChildProcessDebugging(m_pid, /*resume=*/true);
+    } else {
+      m_dap.FinishChildProcessDebugging(m_pid, /*resume=*/false);
+    }
+  }
+
+private:
+  DAP &m_dap;
+  lldb::pid_t m_pid;
+};
+
+static llvm::json::Object CreateForkAttachConfiguration(DAP &dap,
+                                                        lldb::pid_t pid) {
+  const auto &config = dap.configuration;
+  char executable[PATH_MAX] = {};
+  dap.target.GetExecutable().GetPath(executable, sizeof(executable));
+  llvm::json::Object child{
+      {"pid", static_cast<int64_t>(pid)},
+      {"program", executable},
+      {"debugChildProcesses", true},
+      {"stopOnEntry", false},
+      {"debuggerRoot", config.debuggerRoot},
+      {"commandEscapePrefix", config.commandEscapePrefix},
+      {"enableAutoVariableSummaries", config.enableAutoVariableSummaries},
+      {"enableSyntheticChildDebugging", config.enableSyntheticChildDebugging},
+      {"displayExtendedBacktrace", config.displayExtendedBacktrace},
+      {"sourcePath", config.sourcePath},
+      {"targetTriple", config.targetTriple},
+      {"platformName", config.platformName},
+      {"timeout", config.timeout.count()},
+      {"preInitCommands", llvm::json::Array(config.preInitCommands)},
+      {"initCommands", llvm::json::Array(config.initCommands)},
+  };
+  if (config.customFrameFormat)
+    child.try_emplace("customFrameFormat", *config.customFrameFormat);
+  if (config.customThreadFormat)
+    child.try_emplace("customThreadFormat", *config.customThreadFormat);
+  llvm::json::Array source_map;
+  for (const auto &[from, to] : config.sourceMap)
+    source_map.emplace_back(llvm::json::Array{from, to});
+  child.try_emplace("sourceMap", std::move(source_map));
+  return child;
+}
+
+/// Fork notifications survive restarted stops and can be drained at shutdown.
+void DAP::HandleForkEvent(const lldb::SBEvent &event) {
+  auto info = lldb::SBProcess::GetStructuredDataFromEvent(event);
+  if (GetStringValue(info.GetValueForKey("type")) != "fork")
+    return;
+  const lldb::pid_t saved_pid =
+      info.GetValueForKey("pid").GetIntegerValue(LLDB_INVALID_PROCESS_ID);
+  if (saved_pid == LLDB_INVALID_PROCESS_ID)
+    return;
+
+  lldb::SBMutex api_mutex = target.GetAPIMutex();
+  std::lock_guard<lldb::SBMutex> api_guard(api_mutex);
+  auto process = lldb::SBProcess::GetProcessFromEvent(event);
+  lldb::pid_t pid = LLDB_INVALID_PROCESS_ID;
+  if (process.GetState() == lldb::eStateStopped) {
+    for (auto thread : process) {
+      if (thread.GetStopReason() != lldb::eStopReasonFork ||
+          thread.GetStopReasonDataCount() == 0)
+        continue;
+      const lldb::pid_t child_pid = thread.GetStopReasonDataAtIndex(0);
+      // A queued notification can precede the current stop.
+      if (child_pid == saved_pid) {
+        pid = child_pid;
+        break;
+      }
+    }
+  }
+  // A stop hook may already have resumed the parent or reached another stop.
+  if (pid == LLDB_INVALID_PROCESS_ID)
+    pid = saved_pid;
+  bool resume;
+  {
+    std::lock_guard<std::mutex> guard(child_processes_mutex);
+    if (!child_debugging_processes.contains(
+            lldb::SBProcess::GetProcessFromEvent(event).GetUniqueID()))
+      return;
+    pending_child_processes.insert(pid);
+    resume = child_debugging_closed || !configuration.debugChildProcesses ||
+             !configuration_done ||
+             lldb::SBProcess::GetProcessFromEvent(event).GetUniqueID() !=
+                 target.GetProcess().GetUniqueID();
+    if (!resume) {
+      llvm::json::Object arguments{
+          {"request", "attach"},
+          {"configuration", CreateForkAttachConfiguration(*this, pid)},
+      };
+      SendReverseRequest<ForkDebuggingResponseHandler>(
+          "startDebugging", std::move(arguments), *this, pid);
+    }
+  }
+  // Shutdown and registration share the same mutex. Late notifications
+  // release their children instead of starting sessions after disconnect.
+  if (resume)
+    FinishChildProcessDebugging(pid, /*resume=*/true);
+}
+
+/// Keep unrelated stops visible and only resume a parent that is still stopped.
+static bool ContinueAfterFork(DAP &dap, lldb::SBProcess &process) {
+  if ((!dap.configuration.debugChildProcesses &&
+       !DAP::ChildProcessDebuggingActive()) ||
+      !dap.configuration_done)
+    return false;
+  lldb::SBMutex api_mutex = dap.target.GetAPIMutex();
+  std::lock_guard<lldb::SBMutex> guard(api_mutex);
+  {
+    std::lock_guard<std::mutex> child_guard(dap.child_processes_mutex);
+    if (dap.child_debugging_closed ||
+        !dap.child_debugging_processes.contains(process.GetUniqueID()))
+      return false;
+  }
+  const uint32_t stop_id = process.GetStopID();
+  if (stop_id == dap.last_fork_stop_id)
+    return false;
+
+  bool saw_fork = false;
+  bool other_stop = false;
+  for (auto thread : process) {
+    if (thread.GetStopReason() == lldb::eStopReasonFork)
+      saw_fork = true;
+    else
+      other_stop |= ThreadHasStopReason(thread);
+  }
+  if (!saw_fork)
+    return false;
+  dap.last_fork_stop_id = stop_id;
+  if (other_stop)
+    return false;
+
+  lldb::SBError error = process.Continue();
+  if (error.Fail()) {
+    dap.SendOutput(OutputType::Important,
+                   llvm::formatv("Unable to resume parent after fork: {0}\n",
+                                 error.GetCString())
+                       .str());
+    return false;
+  }
+  return true;
+}
+
 static void HandleProcessEvent(const lldb::SBEvent &event, bool &process_exited,
                                Log &log) {
   lldb::SBProcess process = lldb::SBProcess::GetProcessFromEvent(event);
@@ -429,6 +585,7 @@ static void HandleProcessEvent(const lldb::SBEvent &event, bool &process_exited,
     return;
   }
 
+  dap->HandleForkEvent(event);
   const uint32_t event_mask = event.GetType();
 
   if (event_mask & lldb::SBProcess::eBroadcastBitStateChanged) {
@@ -444,10 +601,14 @@ static void HandleProcessEvent(const lldb::SBEvent &event, bool &process_exited,
     case lldb::eStateLaunching:
     case lldb::eStateStopped:
     case lldb::eStateSuspended:
+      // Read fork stop data while it is still valid, before resuming.
+      dap->HandleForkEvents();
       // Only report a stopped event if the process was not
       // automatically restarted.
       if (!lldb::SBProcess::GetRestartedFromEvent(event)) {
         SendStdOutStdErr(*dap, process);
+        if (ContinueAfterFork(*dap, process))
+          break;
         if (llvm::Error err = SendThreadStoppedEvent(*dap))
           DAP_LOG_ERROR(dap->log, std::move(err),
                         "({1}) reporting thread stopped: {0}",
@@ -471,6 +632,7 @@ static void HandleProcessEvent(const lldb::SBEvent &event, bool &process_exited,
           process.GetProcessID() == dap->restarting_process_id) {
         dap->restarting_process_id = LLDB_INVALID_PROCESS_ID;
       } else {
+        dap->ResumePendingChildProcesses();
         // Run any exit LLDB commands the user specified in the
         // launch.json
         dap->RunExitCommands();
@@ -698,7 +860,8 @@ void EventThread(lldb::SBDebugger debugger, lldb::SBBroadcaster broadcaster,
       continue;
 
     const uint32_t event_mask = event.GetType();
-    if (lldb::SBProcess::EventIsProcessEvent(event)) {
+    if (lldb::SBProcess::EventIsProcessEvent(event) ||
+        lldb::SBProcess::EventIsStructuredDataEvent(event)) {
       HandleProcessEvent(event, /*&process_exited=*/done, log);
     } else if (lldb::SBTarget::EventIsTargetEvent(event)) {
       HandleTargetEvent(event, log);
