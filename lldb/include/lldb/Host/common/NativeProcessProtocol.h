@@ -71,6 +71,13 @@ public:
 
   virtual Status Detach() = 0;
 
+  /// Detach, optionally leaving the process stopped for another debugger.
+  virtual Status Detach(bool keep_stopped) {
+    if (keep_stopped)
+      return Status::FromErrorString("Detach and stay stopped is unsupported");
+    return Detach();
+  }
+
   /// Sends a process a UNIX signal \a signal.
   ///
   /// \return
@@ -306,8 +313,9 @@ public:
     libraries = (1u << 9),
     accelerator_plugins = (1u << 10),
     address_spaces = (1u << 11),
+    detach_stay_stopped = (1u << 12),
 
-    LLVM_MARK_AS_BITMASK_ENUM(address_spaces)
+    LLVM_MARK_AS_BITMASK_ENUM(detach_stay_stopped)
   };
 
   class Manager {

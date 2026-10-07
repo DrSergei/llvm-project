@@ -89,6 +89,9 @@ void GDBRemoteCommunicationServerLLGS::RegisterPacketHandlers() {
                                 &GDBRemoteCommunicationServerLLGS::Handle_c);
   RegisterMemberFunctionHandler(StringExtractorGDBRemote::eServerPacketType_D,
                                 &GDBRemoteCommunicationServerLLGS::Handle_D);
+  RegisterMemberFunctionHandler(
+      StringExtractorGDBRemote::eServerPacketType_qSupportsDetachAndStayStopped,
+      &GDBRemoteCommunicationServerLLGS::Handle_qSupportsDetachAndStayStopped);
   RegisterMemberFunctionHandler(StringExtractorGDBRemote::eServerPacketType_H,
                                 &GDBRemoteCommunicationServerLLGS::Handle_H);
   RegisterMemberFunctionHandler(StringExtractorGDBRemote::eServerPacketType_I,
@@ -3846,6 +3849,15 @@ GDBRemoteCommunicationServerLLGS::Handle_vRun(
 }
 
 GDBRemoteCommunication::PacketResult
+GDBRemoteCommunicationServerLLGS::Handle_qSupportsDetachAndStayStopped(
+    StringExtractorGDBRemote &packet) {
+  if (bool(m_process_manager.GetSupportedExtensions() &
+           NativeProcessProtocol::Extension::detach_stay_stopped))
+    return SendOKResponse();
+  return SendUnimplementedResponse(packet.GetStringRef().data());
+}
+
+GDBRemoteCommunication::PacketResult
 GDBRemoteCommunicationServerLLGS::Handle_D(StringExtractorGDBRemote &packet) {
   Log *log = GetLog(LLDBLog::Process);
   if (!m_non_stop)
@@ -3853,17 +3865,24 @@ GDBRemoteCommunicationServerLLGS::Handle_D(StringExtractorGDBRemote &packet) {
 
   lldb::pid_t pid = LLDB_INVALID_PROCESS_ID;
 
-  // Consume the ';' after D.
-  packet.SetFilePos(1);
+  const bool keep_stopped = packet.GetStringRef().starts_with("D1");
+  packet.SetFilePos(keep_stopped ? 2 : 1);
   if (packet.GetBytesLeft()) {
     if (packet.GetChar() != ';')
       return SendIllFormedResponse(packet, "D missing expected ';'");
 
-    // Grab the PID from which we will detach (assume hex encoding).
-    pid = packet.GetU32(LLDB_INVALID_PROCESS_ID, 16);
-    if (pid == LLDB_INVALID_PROCESS_ID)
+    // A PID must consume the entire remainder of the packet.
+    if (packet.GetStringRef()
+            .substr(packet.GetFilePos())
+            .getAsInteger(16, pid) ||
+        pid == LLDB_INVALID_PROCESS_ID)
       return SendIllFormedResponse(packet, "D failed to parse the process id");
   }
+
+  if (keep_stopped &&
+      !bool(m_process_manager.GetSupportedExtensions() &
+            NativeProcessProtocol::Extension::detach_stay_stopped))
+    return SendUnimplementedResponse(packet.GetStringRef().data());
 
   // Detach forked children if their PID was specified *or* no PID was requested
   // (i.e. detach-all packet).
@@ -3875,7 +3894,7 @@ GDBRemoteCommunicationServerLLGS::Handle_D(StringExtractorGDBRemote &packet) {
       LLDB_LOGF(log,
                 "GDBRemoteCommunicationServerLLGS::%s detaching %" PRId64,
                 __FUNCTION__, it->first);
-      if (llvm::Error e = it->second.process_up->Detach().ToError())
+      if (llvm::Error e = it->second.process_up->Detach(keep_stopped).ToError())
         detach_error = llvm::joinErrors(std::move(detach_error), std::move(e));
       else {
         if (it->second.process_up.get() == m_current_process)

@@ -270,6 +270,9 @@ protected:
 
   PacketResult Handle_D(StringExtractorGDBRemote &packet);
 
+  PacketResult
+  Handle_qSupportsDetachAndStayStopped(StringExtractorGDBRemote &packet);
+
   PacketResult Handle_qThreadStopInfo(StringExtractorGDBRemote &packet);
 
   PacketResult Handle_jThreadsInfo(StringExtractorGDBRemote &packet);

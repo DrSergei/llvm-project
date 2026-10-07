@@ -275,6 +275,8 @@ StringExtractorGDBRemote::GetServerPacketType() const {
         return eServerPacketType_qShlibInfoAddr;
       if (PACKET_MATCHES("qStepPacketSupported"))
         return eServerPacketType_qStepPacketSupported;
+      if (PACKET_MATCHES("qSupportsDetachAndStayStopped:"))
+        return eServerPacketType_qSupportsDetachAndStayStopped;
       if (PACKET_STARTS_WITH("qSupported"))
         return eServerPacketType_qSupported;
       if (PACKET_MATCHES("qSyncThreadStateSupported"))

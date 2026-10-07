@@ -86,6 +86,8 @@ public:
 
   Status Detach() override;
 
+  Status Detach(bool keep_stopped) override;
+
   Status Signal(int signo) override;
 
   Status Interrupt() override;

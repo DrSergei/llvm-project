@@ -351,7 +351,7 @@ NativeProcessLinux::Manager::GetSupportedExtensions() const {
   NativeProcessLinux::Extension supported =
       Extension::multiprocess | Extension::fork | Extension::vfork |
       Extension::pass_signals | Extension::auxv | Extension::libraries_svr4 |
-      Extension::siginfo_read;
+      Extension::siginfo_read | Extension::detach_stay_stopped;
 
 #ifdef __aarch64__
   // At this point we do not have a process so read auxv directly.
@@ -475,6 +475,7 @@ llvm::Expected<std::vector<::pid_t>> NativeProcessLinux::Attach(::pid_t pid) {
   // Use a map to keep track of the threads which we have attached/need to
   // attach.
   Host::TidMap tids_to_attach;
+  bool was_group_stopped = false;
   while (Host::FindProcessThreads(pid, tids_to_attach)) {
     for (Host::TidMap::iterator it = tids_to_attach.begin();
          it != tids_to_attach.end();) {
@@ -513,6 +514,16 @@ llvm::Expected<std::vector<::pid_t>> NativeProcessLinux::Attach(::pid_t pid) {
               std::error_code(errno, std::generic_category()));
         }
 
+        // Attaching to an already stopped process can report the old
+        // group-stop before the SIGSTOP from PTRACE_ATTACH is delivered.
+        // Remember this so we can cancel that pending SIGSTOP after all
+        // threads are safely in ptrace-stops.
+        siginfo_t info;
+        Status info_status =
+            PtraceWrapper(PTRACE_GETSIGINFO, tid, nullptr, &info);
+        if (info_status.Fail() && info_status.GetError() == EINVAL)
+          was_group_stopped = true;
+
         if ((status = SetDefaultPtraceOpts(tid)).Fail())
           return status.ToError();
 
@@ -528,6 +539,12 @@ llvm::Expected<std::vector<::pid_t>> NativeProcessLinux::Attach(::pid_t pid) {
   size_t tid_count = tids_to_attach.size();
   if (tid_count == 0)
     return llvm::createStringError("no such process");
+
+  // SIGCONT clears the pending stopping signal and the inherited group-stop.
+  // It does not release the ptrace-stops: only the debugger can resume those.
+  if (was_group_stopped && kill(pid, SIGCONT) != 0)
+    return llvm::errorCodeToError(
+        std::error_code(errno, std::generic_category()));
 
   std::vector<::pid_t> tids;
   tids.reserve(tid_count);
@@ -1089,20 +1106,31 @@ Status NativeProcessLinux::Halt() {
   return error;
 }
 
-Status NativeProcessLinux::Detach() {
+Status NativeProcessLinux::Detach() { return Detach(false); }
+
+Status NativeProcessLinux::Detach(bool keep_stopped) {
   Status error;
 
   // Tell ptrace to detach from the process.
   if (GetID() == LLDB_INVALID_PROCESS_ID)
     return error;
 
-  // Cancel out any SIGSTOPs we may have sent while stopping the process.
-  // Otherwise, the process may stop as soon as we detach from it.
-  kill(GetID(), SIGCONT);
+  if (keep_stopped) {
+    // Queue a real stopping signal before detaching any threads. Injecting
+    // SIGSTOP with PTRACE_DETACH is insufficient: at a PTRACE_EVENT stop (for
+    // example fork or exec), the kernel can ignore the injected signal.
+    // Do not send SIGCONT here, since it would cancel the stopping signal.
+    if (kill(GetID(), SIGSTOP) != 0)
+      return Status::FromErrno();
+  } else {
+    // Cancel out any SIGSTOPs we may have sent while stopping the process.
+    // Otherwise, the process may stop as soon as we detach from it.
+    kill(GetID(), SIGCONT);
+  }
 
   for (const auto &thread : m_threads) {
     Status e = Detach(thread->GetID());
-     // Save the error, but still attempt to detach from other threads.
+    // Save the error, but still attempt to detach from other threads.
     if (e.Fail())
       error = e.Clone();
   }

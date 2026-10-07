@@ -1704,7 +1704,12 @@ Status GDBRemoteCommunicationClient::Detach(bool keep_stopped,
   PacketResult packet_result =
       SendPacketAndWaitForResponse(packet.GetString(), response);
   if (packet_result != PacketResult::Success)
-    error = Status::FromErrorString("Sending disconnect packet failed.");
+    return Status::FromErrorString("Sending disconnect packet failed.");
+  if (response.IsErrorResponse())
+    return response.GetStatus();
+  if (!response.IsOKResponse())
+    return Status::FromErrorString(
+        "Detach packet is not supported by the server.");
   return error;
 }
 
